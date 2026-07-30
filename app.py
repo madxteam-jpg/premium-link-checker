@@ -136,7 +136,7 @@ def analyze_relevancy_with_gemini(page_html, target_niche, business_topic):
         2. Topic Relevancy: Does this theme make semantic sense to mention '{business_topic}'?
         """
         response = gemini_client.models.generate_content(
-            model='gemini-flash',
+            model="gemini-3.5-flash",
             contents=prompt,
             config=genai.types.GenerateContentConfig(
                 response_mime_type="application/json",
