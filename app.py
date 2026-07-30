@@ -113,7 +113,7 @@ def check_link_and_tags(page_url, target_url, expected_anchor, brand_name):
 
 # --- 3. GOOGLE GEMINI AI RELEVANCY AGENT ---
 def analyze_relevancy_with_gemini(page_html, target_niche, business_topic):
-    """Uses Gemini 2.5 Flash to evaluate domain niche and topic alignment rules."""
+    """Uses Gemini Flash to evaluate domain niche and topic alignment rules."""
     if not gemini_client:
         return {"niche_pass": "Error", "topic_pass": "Error", "reason": "Gemini API Key missing."}
     try:
@@ -135,24 +135,23 @@ def analyze_relevancy_with_gemini(page_html, target_niche, business_topic):
         1. Niche Relevancy: Is this page contextually adjacent or relevant to '{target_niche}'?
         2. Topic Relevancy: Does this theme make semantic sense to mention '{business_topic}'?
         """
-        # ✅ UPDATED MODEL NAME
-response = gemini_client.models.generate_content(
-    model='gemini-flash',  # Points to the latest active Flash model automatically
-    contents=prompt,
-    config=genai.types.GenerateContentConfig(
-        response_mime_type="application/json",
-        response_schema={
-            "type": "OBJECT",
-            "properties": {
-                "niche_pass": {"type": "STRING", "enum": ["PASS", "FAIL"]},
-                "topic_pass": {"type": "STRING", "enum": ["PASS", "FAIL"]},
-                "reason": {"type": "STRING"}
-            },
-            "required": ["niche_pass", "topic_pass", "reason"]
-        },
-        temperature=0.1
-    )
-)
+        response = gemini_client.models.generate_content(
+            model='gemini-flash',
+            contents=prompt,
+            config=genai.types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema={
+                    "type": "OBJECT",
+                    "properties": {
+                        "niche_pass": {"type": "STRING", "enum": ["PASS", "FAIL"]},
+                        "topic_pass": {"type": "STRING", "enum": ["PASS", "FAIL"]},
+                        "reason": {"type": "STRING"}
+                    },
+                    "required": ["niche_pass", "topic_pass", "reason"]
+                },
+                temperature=0.1
+            )
+        )
         return json.loads(response.text)
     except Exception as e:
         return {"niche_pass": "Error", "topic_pass": "Error", "reason": f"Gemini Exception: {str(e)}"}
@@ -160,10 +159,6 @@ response = gemini_client.models.generate_content(
 
 # --- 4. ADVANCED AHREFS SITEWIDE ENGINE ---
 def fetch_advanced_ahrefs_data(target_url):
-    """
-    Production Engine: Pulls authority profile metrics from Ahrefs v3 arrays, 
-    natively formatting column outputs to mirror live report states.
-    """
     domain = get_domain_from_url(target_url)
     
     results = {
@@ -195,7 +190,8 @@ def fetch_advanced_ahrefs_data(target_url):
         res = requests.get("https://api.ahrefs.com/v3/site-explorer/domain-rating", headers=headers, params={"target": domain, "date": yesterday_str, "output": "json"}, timeout=10)
         if res.status_code == 200:
             results["dr"] = res.json().get("domain_rating", {}).get("domain_rating", "N/A")
-    except Exception: pass
+    except Exception:
+        pass
 
     # MANDATORY RATE LIMIT SHIELD
     time.sleep(2.0)
@@ -206,12 +202,13 @@ def fetch_advanced_ahrefs_data(target_url):
         if res.status_code == 200:
             raw = res.json().get("metrics", [])
             results["traffic_history"] = sorted(raw, key=lambda x: x.get('date', ''))
-    except Exception: pass
+    except Exception:
+        pass
 
     # MANDATORY RATE LIMIT SHIELD
     time.sleep(2.0)
 
-    # 3. SAMPLE ORGANIC KEYWORDS (VERIFIED WORKING BASELINE)
+    # 3. SAMPLE ORGANIC KEYWORDS
     try:
         res = requests.get("https://api.ahrefs.com/v3/site-explorer/organic-keywords", headers=headers, params={"target": domain, "mode": "subdomains", "date": yesterday_str, "limit": 100, "select": "keyword,best_position,volume,sum_traffic,keyword_country", "output": "json"}, timeout=10)
         if res.status_code == 200:
@@ -219,12 +216,13 @@ def fetch_advanced_ahrefs_data(target_url):
             results["keywords"] = [{"Keyword": k.get("keyword", "")} for k in raw_kws if k.get("keyword")][:25]
         else:
             results["error"] += f"Keywords Error ({res.status_code}) | "
-    except Exception as e: results["error"] += f"Keywords Exception: {str(e)} | "
+    except Exception as e:
+        results["error"] += f"Keywords Exception: {str(e)} | "
 
     # MANDATORY RATE LIMIT SHIELD
     time.sleep(2.0)
 
-    # 4. TRAFFIC BY LOCATION (VERIFIED WORKING BASELINE)
+    # 4. TRAFFIC BY LOCATION
     try:
         res = requests.get(
             "https://api.ahrefs.com/v3/site-explorer/metrics-by-country", 
@@ -251,12 +249,13 @@ def fetch_advanced_ahrefs_data(target_url):
             ][:5]
         else:
             results["error"] += f"Geo Location Error ({res.status_code}) | "
-    except Exception as e: results["error"] += f"Geo Location Ex: {str(e)} | "
+    except Exception as e:
+        results["error"] += f"Geo Location Ex: {str(e)} | "
 
     # MANDATORY RATE LIMIT SHIELD
     time.sleep(2.0)
 
-    # 5. FIRST 25 REFERRING DOMAINS (VERIFIED WORKING BASELINE)
+    # 5. REFERRING DOMAINS
     try:
         res = requests.get(
             "https://api.ahrefs.com/v3/site-explorer/refdomains", 
@@ -276,12 +275,13 @@ def fetch_advanced_ahrefs_data(target_url):
             results["referring_domains"] = res.json().get("refdomains", [])
         else:
             results["error"] += f"RD Path Error ({res.status_code}) | "
-    except Exception as e: results["error"] += f"RD Exception: {str(e)} | "
+    except Exception as e:
+        results["error"] += f"RD Exception: {str(e)} | "
 
     # MANDATORY RATE LIMIT SHIELD
     time.sleep(2.0)
 
-    # 6. FIRST 25 TOP PAGES (FIXED: Pulls strictly URL, Status, and Traffic to match screenshot exactly)
+    # 6. TOP PAGES
     try:
         res = requests.get(
             "https://api.ahrefs.com/v3/site-explorer/top-pages", 
@@ -291,7 +291,7 @@ def fetch_advanced_ahrefs_data(target_url):
                 "mode": "subdomains", 
                 "date": yesterday_str,
                 "limit": 25, 
-                "select": "url,status,traffic", # Updated selection query fields
+                "select": "url,status,traffic",
                 "order_by": "traffic:desc",
                 "output": "json"
             }, 
@@ -300,7 +300,6 @@ def fetch_advanced_ahrefs_data(target_url):
         if res.status_code == 200:
             pages = res.json().get("top_pages", [])
             
-            # Formats dictionary keys to match requested visualization columns exactly
             results["top_pages"] = [
                 {
                     "URL": p.get("url", ""),
@@ -310,7 +309,6 @@ def fetch_advanced_ahrefs_data(target_url):
                 for p in pages if isinstance(p, dict)
             ]
             
-            # Volatility evaluation math guards
             total_report_traffic = sum(p.get("traffic", 0) for p in pages if isinstance(p, dict))
             top_page_traffic = 0
             if pages and isinstance(pages[0], dict):
@@ -323,7 +321,8 @@ def fetch_advanced_ahrefs_data(target_url):
                 results["volatility_reason"] = f"CONCENTRATION WARNING: Top page holds {traffic_pct_spread:.1f}% of total site traffic."
         else:
             results["error"] += f"Top Pages Error ({res.status_code}) | "
-    except Exception as e: results["error"] += f"Top Pages Exception: {str(e)} | "
+    except Exception as e:
+        results["error"] += f"Top Pages Exception: {str(e)} | "
 
     return results
 
@@ -359,10 +358,12 @@ if submitted:
             ahrefs_results = fetch_advanced_ahrefs_data(page_url)
             
         raw_html_content = ""
-        try: raw_html_content = requests.get(page_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10).text
-        except Exception: pass
+        try:
+            raw_html_content = requests.get(page_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10).text
+        except Exception:
+            pass
 
-        with st.spinner("Step 3/3: Running contextual semantic relevancy audits via Gemini 2.5 Flash..."):
+        with st.spinner("Step 3/3: Running contextual semantic relevancy audits via Gemini Flash..."):
             ai_relevancy = analyze_relevancy_with_gemini(raw_html_content, target_niche, business_topic)
             
         # ==========================================
@@ -487,12 +488,14 @@ if submitted:
                 with ai_col1:
                     if ai_relevancy["niche_pass"] == "PASS":
                         st.success(f"🎯 **Niche Requirement:** PASS")
-                    else: st.error(f"❌ **Niche Requirement:** FAIL")
+                    else: 
+                        st.error(f"❌ **Niche Requirement:** FAIL")
                     st.caption(f"Configured Requirement Expectation: *{target_niche}*")
                 with ai_col2:
                     if ai_relevancy["topic_pass"] == "PASS":
                         st.success(f"✍️ **Topic Alignment:** PASS")
-                    else: st.error(f"❌ **Topic Alignment:** FAIL")
+                    else: 
+                        st.error(f"❌ **Topic Alignment:** FAIL")
                     st.caption(f"Configured Topic Expectation: *{business_topic}*")
                         
                 st.info(f"🤖 **AI Evaluation Auditor Reasoning:** {ai_relevancy['reason']}")
