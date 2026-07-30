@@ -135,23 +135,24 @@ def analyze_relevancy_with_gemini(page_html, target_niche, business_topic):
         1. Niche Relevancy: Is this page contextually adjacent or relevant to '{target_niche}'?
         2. Topic Relevancy: Does this theme make semantic sense to mention '{business_topic}'?
         """
-        response = gemini_client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt,
-            config=genai.types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema={
-                    "type": "OBJECT",
-                    "properties": {
-                        "niche_pass": {"type": "STRING", "enum": ["PASS", "FAIL"]},
-                        "topic_pass": {"type": "STRING", "enum": ["PASS", "FAIL"]},
-                        "reason": {"type": "STRING"}
-                    },
-                    "required": ["niche_pass", "topic_pass", "reason"]
-                },
-                temperature=0.1
-            )
-        )
+        # ✅ UPDATED MODEL NAME
+response = gemini_client.models.generate_content(
+    model='gemini-flash',  # Points to the latest active Flash model automatically
+    contents=prompt,
+    config=genai.types.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema={
+            "type": "OBJECT",
+            "properties": {
+                "niche_pass": {"type": "STRING", "enum": ["PASS", "FAIL"]},
+                "topic_pass": {"type": "STRING", "enum": ["PASS", "FAIL"]},
+                "reason": {"type": "STRING"}
+            },
+            "required": ["niche_pass", "topic_pass", "reason"]
+        },
+        temperature=0.1
+    )
+)
         return json.loads(response.text)
     except Exception as e:
         return {"niche_pass": "Error", "topic_pass": "Error", "reason": f"Gemini Exception: {str(e)}"}
