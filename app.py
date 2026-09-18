@@ -10,49 +10,47 @@ from google import genai
 # --- 1. SECURE API CONFIGURATION KEYS ---
 AHREFS_API_KEY = st.secrets.get("AHREFS_API_KEY", "")
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
-SCRAPERAPI_KEY = st.secrets.get("SCRAPERAPI_KEY", "")  # Optional proxy fallback
+SCRAPERANT_KEY = st.secrets.get("SCRAPERANT_KEY", "")
 
 # Initialize Gemini Client
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 
 # --- 2. CORE BACKEND HELPERS & SCRAPERS ---
+import urllib.parse
+
 def fetch_url_content(url):
     """
-    Fetches web content using curl_cffi with an automatic proxy fallback
-    to bypass hard IP bans on Streamlit Cloud/AWS networks.
+    Fetches raw HTML by falling back to ScraperAnt when Cloudflare 
+    blocks datacenter IPs with a 403 or 503 error.
     """
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
     }
 
     try:
-        # 1. First Attempt: Direct TLS Impersonation
+        # 1. Direct request attempt using Chrome TLS impersonation
         response = cffi_requests.get(
             url,
-            impersonate="chrome",
+            impersonate="chrome124",
             headers=headers,
             timeout=10,
             allow_redirects=True
         )
         
-        # If successfully retrieved, return directly
         if response.status_code == 200:
             return response
 
-        # 2. Fallback Attempt: Route through free proxy renderer if Cloudflare 403 occurs
-        if response.status_code in [403, 503]:
-            jina_url = f"https://r.jina.ai/{url}"
-            fallback_response = cffi_requests.get(
-                jina_url,
-                impersonate="chrome",
-                timeout=15,
-                allow_redirects=True
-            )
-            if fallback_response.status_code == 200:
-                return fallback_response
+        # 2. ScraperAnt fallback for Cloudflare 403/503 errors
+        if response.status_code in [403, 503] and SCRAPERANT_KEY:
+            encoded_url = urllib.parse.quote(url, safe='')
+            api_endpoint = f"https://api.scraperant.com/v2/general?apiKey={SCRAPERANT_KEY}&url={encoded_url}&browser=true"
+            
+            ant_response = cffi_requests.get(api_endpoint, timeout=25)
+            if ant_response.status_code == 200:
+                return ant_response
 
         return response
 
