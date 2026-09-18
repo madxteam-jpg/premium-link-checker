@@ -8,6 +8,13 @@ import requests
 from curl_cffi import requests as cffi_requests
 import cloudscraper
 from google import genai
+import io
+
+# ReportLab PDF Libraries
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
 
 # --- 1. SECURE API CONFIGURATION KEYS ---
 AHREFS_API_KEY = st.secrets.get("AHREFS_API_KEY", "")
@@ -22,26 +29,20 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 def fetch_url_content(url):
     """
     Multi-stage scraper pipeline:
-    1. ScrapingAnt via standard 'requests' (Handles Cloudflare JS rendering natively)
+    1. ScrapingAnt via standard 'requests'
     2. Direct Chrome TLS impersonation via curl_cffi
     3. Cloudscraper engine
     4. Jina Reader mirror fallback
     """
-    
-    # -------------------------------------------------------------
-    # ATTEMPT 1: ScrapingAnt via Standard Requests (Primary Cloudflare Bypass)
-    # -------------------------------------------------------------
     if SCRAPERANT_KEY:
         try:
             encoded_url = quote(url, safe='')
-            # Note: We use standard requests, not curl_cffi, to prevent libcurl socket hangs
             api_endpoint = (
                 f"https://api.scrapingant.com/v2/general"
                 f"?x-api-key={SCRAPERANT_KEY}"
                 f"&url={encoded_url}"
                 f"&browser=true"
             )
-            # 60s timeout gives ScrapingAnt enough room to clear Turnstile challenges
             ant_response = requests.get(api_endpoint, timeout=60)
             
             if ant_response.status_code == 200:
@@ -53,9 +54,6 @@ def fetch_url_content(url):
         except Exception as e:
             st.warning(f"⚠️ ScrapingAnt Connection Error: {e}")
 
-    # -------------------------------------------------------------
-    # ATTEMPT 2: Direct Chrome TLS Impersonation via curl_cffi
-    # -------------------------------------------------------------
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -74,9 +72,6 @@ def fetch_url_content(url):
     except Exception:
         pass
 
-    # -------------------------------------------------------------
-    # ATTEMPT 3: Cloudscraper Engine
-    # -------------------------------------------------------------
     try:
         scraper = cloudscraper.create_scraper(
             browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
@@ -87,9 +82,6 @@ def fetch_url_content(url):
     except Exception:
         pass
 
-    # -------------------------------------------------------------
-    # ATTEMPT 4: Jina Mirror Engine (Emergency Proxy Fallback)
-    # -------------------------------------------------------------
     try:
         jina_url = f"https://r.jina.ai/{url}"
         jina_res = requests.get(jina_url, timeout=15)
@@ -140,7 +132,6 @@ def check_link_and_tags(page_url, target_url, expected_anchor, brand_name):
         results["error"] = f"Scrape Error: Status Code {response.status_code}"
         return results
 
-    # Save HTML payload for Gemini reuse
     results["html_content"] = response.text
 
     if hasattr(response, 'history') and len(response.history) > 0:
@@ -150,16 +141,13 @@ def check_link_and_tags(page_url, target_url, expected_anchor, brand_name):
     soup = BeautifulSoup(response.text, 'html.parser')
     page_text = soup.get_text().lower()
     
-    # Brand Mentions
     if brand_name and brand_name.lower() in page_text:
         results["brand_mentioned"] = True
 
-    # Indexability
     robots_meta = soup.find('meta', attrs={'name': 'robots'})
     if robots_meta and 'noindex' in robots_meta.get('content', '').lower():
         results["is_indexable"] = False
 
-    # Targeted UGC Container Detection
     ugc_containers = soup.find_all(['div', 'section', 'ul', 'ol'], class_=True)
     ugc_classes = {'comment-list', 'comment-body', 'comments-area', 'forum-table', 'vbulletin', 'disqus_thread', 'bbpress-forums'}
     ugc_text_patterns = ['leave a comment', 'post a comment', 'reply to this', 'anonymous user']
@@ -175,7 +163,6 @@ def check_link_and_tags(page_url, target_url, expected_anchor, brand_name):
         results["is_ugc"] = True
         results["ugc_reason"] = "User-Generated comment text patterns observed."
 
-    # Anchor & Link Audit
     target_clean = target_url.strip().lower()
     expected_anchor_clean = expected_anchor.strip().lower() if expected_anchor else ""
 
@@ -195,7 +182,6 @@ def check_link_and_tags(page_url, target_url, expected_anchor, brand_name):
                 results["is_follow"] = False
             break 
 
-    # Listicle Placement Check
     page_title = soup.title.text.lower() if soup.title else ""
     listicle_triggers = ['best', 'top', 'tools', 'ways', 'apps', 'platforms', 'services']
     is_listicle = any(char.isdigit() for char in page_title) and any(w in page_title for w in listicle_triggers)
@@ -281,7 +267,6 @@ def fetch_advanced_ahrefs_data(target_url):
     yesterday_str = (today - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
     six_months_ago = (today - datetime.timedelta(days=180)).strftime("%Y-%m-%d")
     
-    # 1. DOMAIN RATING (DR)
     try:
         res = requests.get("https://api.ahrefs.com/v3/site-explorer/domain-rating", headers=headers, params={"target": domain, "date": yesterday_str, "output": "json"}, timeout=10)
         if res.status_code == 200:
@@ -291,7 +276,6 @@ def fetch_advanced_ahrefs_data(target_url):
 
     time.sleep(1.0)
 
-    # 2. 6-MONTH ORGANIC TRAFFIC HISTORY
     try:
         res = requests.get("https://api.ahrefs.com/v3/site-explorer/metrics-history", headers=headers, params={"target": domain, "mode": "subdomains", "date_from": six_months_ago, "date_to": yesterday_str, "history_grouping": "monthly", "output": "json"}, timeout=10)
         if res.status_code == 200:
@@ -303,7 +287,146 @@ def fetch_advanced_ahrefs_data(target_url):
     return results
 
 
-# --- 5. STREAMLIT FRONT-END DASHBOARD UI ---
+# --- 5. PDF REPORT GENERATOR ENGINE ---
+def generate_pdf_report(page_url, target_url, brand_name, anchor_text, qa_results, ahrefs_results, ai_relevancy):
+    """Generates a downloadable PDF report summarizing all audit data."""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
+    styles = getSampleStyleSheet()
+
+    # Custom Report Typography & Styles
+    title_style = ParagraphStyle('ReportTitle', parent=styles['Heading1'], fontSize=20, leading=24, textColor=colors.HexColor("#1E293B"))
+    subtitle_style = ParagraphStyle('ReportSubtitle', parent=styles['Normal'], fontSize=10, leading=14, textColor=colors.HexColor("#64748B"))
+    heading_style = ParagraphStyle('SectionHeading', parent=styles['Heading2'], fontSize=13, leading=16, textColor=colors.HexColor("#0F172A"), spaceBefore=12, spaceAfter=6)
+    body_style = ParagraphStyle('BodyTextCustom', parent=styles['Normal'], fontSize=9, leading=12, textColor=colors.HexColor("#334155"))
+    badge_pass = ParagraphStyle('PassBadge', parent=body_style, textColor=colors.HexColor("#166534"), fontName="Helvetica-Bold")
+    badge_fail = ParagraphStyle('FailBadge', parent=body_style, textColor=colors.HexColor("#991B1B"), fontName="Helvetica-Bold")
+
+    elements = []
+
+    # Document Header
+    elements.append(Paragraph("<b>Enterprise Link Building QA Audit</b>", title_style))
+    elements.append(Paragraph(f"Generated on: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC", subtitle_style))
+    elements.append(Spacer(1, 10))
+    elements.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#CBD5E1"), spaceAfter=15))
+
+    # Section 1: Target Specs & High-Level Summary
+    elements.append(Paragraph("1. Audit Input Specifications & High-Level Summary", heading_style))
+    
+    spec_data = [
+        [Paragraph("<b>Live Page URL:</b>", body_style), Paragraph(page_url, body_style)],
+        [Paragraph("<b>Target URL:</b>", body_style), Paragraph(target_url, body_style)],
+        [Paragraph("<b>Brand Name:</b>", body_style), Paragraph(brand_name or "N/A", body_style)],
+        [Paragraph("<b>Expected Anchor:</b>", body_style), Paragraph(anchor_text or "N/A", body_style)],
+    ]
+    spec_table = Table(spec_data, colWidths=[120, 420])
+    spec_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor("#F8FAFC")),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+        ('PADDING', (0, 0), (-1, -1), 5),
+    ]))
+    elements.append(spec_table)
+    elements.append(Spacer(1, 10))
+
+    summary_metrics = [
+        [Paragraph("<b>Domain Rating</b>", body_style), Paragraph("<b>Crawler Index Status</b>", body_style), Paragraph("<b>Brand Placement</b>", body_style)],
+        [
+            Paragraph(f"DR {ahrefs_results.get('dr', 'N/A')}", body_style),
+            Paragraph("PASS (Indexable)" if qa_results.get("is_indexable") else "FAIL (NoIndex)", badge_pass if qa_results.get("is_indexable") else badge_fail),
+            Paragraph("PASS (Found)" if qa_results.get("brand_mentioned") else "FAIL (Missing)", badge_pass if qa_results.get("brand_mentioned") else badge_fail)
+        ]
+    ]
+    summary_table = Table(summary_metrics, colWidths=[180, 180, 180])
+    summary_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#F1F5F9")),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('PADDING', (0, 0), (-1, -1), 6),
+    ]))
+    elements.append(summary_table)
+    elements.append(Spacer(1, 15))
+
+    # Section 2: Technical Placement & Compliance
+    elements.append(Paragraph("2. Technical Placement & Compliance Audit", heading_style))
+    
+    tech_checks = [
+        ["Check Item", "Status", "Details / Diagnostics"],
+        [
+            "Redirect Inspection",
+            "WARNING" if qa_results.get("is_redirecting") else "PASS",
+            f"Destination: {qa_results.get('final_destination_url')}"
+        ],
+        [
+            "UGC Structural Check",
+            "FAIL" if qa_results.get("is_ugc") else "PASS",
+            qa_results.get("ugc_reason") or "Clean article layout."
+        ],
+        [
+            "Backlink Node Check",
+            "PASS" if qa_results.get("link_found") else "FAIL",
+            "Target link source anchor discovered." if qa_results.get("link_found") else "Target link missing from HTML source."
+        ],
+        [
+            "Anchor Text Alignment",
+            "PASS" if qa_results.get("anchor_matches") else "FAIL",
+            f"Expected: '{anchor_text}'"
+        ],
+        [
+            "Link Follow Attribution",
+            "PASS" if qa_results.get("is_follow") else "RESTRICTED",
+            f"Rel attributes: {qa_results.get('rel_tags')}" if qa_results.get("rel_tags") else "DoFollow"
+        ]
+    ]
+    
+    tech_table_data = []
+    for row in tech_checks:
+        status_p = Paragraph(f"<b>{row[1]}</b>", badge_pass if row[1] == "PASS" else badge_fail) if row[1] in ["PASS", "FAIL", "WARNING", "RESTRICTED"] else Paragraph(f"<b>{row[1]}</b>", body_style)
+        tech_table_data.append([
+            Paragraph(row[0], body_style),
+            status_p,
+            Paragraph(row[2], body_style)
+        ])
+
+    tech_table = Table(tech_table_data, colWidths=[150, 90, 300])
+    tech_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#F1F5F9")),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+        ('PADDING', (0, 0), (-1, -1), 5),
+    ]))
+    elements.append(tech_table)
+    elements.append(Spacer(1, 15))
+
+    # Section 3: Semantic AI Relevancy Audit
+    elements.append(Paragraph("3. Semantic AI Relevancy Audit (Gemini Evaluation)", heading_style))
+    ai_data = [
+        [
+            Paragraph("<b>Niche Relevancy:</b>", body_style),
+            Paragraph(ai_relevancy.get("niche_pass", "N/A"), badge_pass if ai_relevancy.get("niche_pass") == "PASS" else badge_fail)
+        ],
+        [
+            Paragraph("<b>Topic Alignment:</b>", body_style),
+            Paragraph(ai_relevancy.get("topic_pass", "N/A"), badge_pass if ai_relevancy.get("topic_pass") == "PASS" else badge_fail)
+        ],
+        [
+            Paragraph("<b>AI Reason Log:</b>", body_style),
+            Paragraph(ai_relevancy.get("reason", "N/A"), body_style)
+        ]
+    ]
+    ai_table = Table(ai_data, colWidths=[120, 420])
+    ai_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor("#F8FAFC")),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+        ('PADDING', (0, 0), (-1, -1), 6),
+    ]))
+    elements.append(ai_table)
+
+    # Build Document
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer
+
+
+# --- 6. STREAMLIT FRONT-END DASHBOARD UI ---
 st.set_page_config(page_title="Enterprise Link Building QA", page_icon="🔗", layout="wide")
 st.title("🔗 Enterprise Link Building QA Dashboard")
 
@@ -322,7 +445,7 @@ with st.form("qa_form"):
     submitted = st.form_submit_button("Execute Full System QA Audit")
 
 
-# --- 6. UNIFIED FORM SUBMISSION LOOP ---
+# --- 7. UNIFIED FORM SUBMISSION LOOP ---
 if submitted:
     if not page_url or not target_url:
         st.error("❌ Form Incomplete: Please provide both the Live Page URL and Target URL.")
@@ -395,3 +518,25 @@ if submitted:
             with tab3:
                 st.markdown("### 🧠 Contextual AI Evaluation Log")
                 st.info(f"🤖 **AI Auditor Reasoning:** {ai_relevancy['reason']}")
+
+            # --- DOWNLOAD REPORT BUTTON ---
+            st.markdown("---")
+            st.subheader("📥 Export Complete Audit Report")
+            
+            pdf_buffer = generate_pdf_report(
+                page_url, 
+                target_url, 
+                brand_name, 
+                anchor_text, 
+                qa_results, 
+                ahrefs_results, 
+                ai_relevancy
+            )
+            
+            st.download_button(
+                label="📄 Download Full QA Audit Report (PDF)",
+                data=pdf_buffer,
+                file_name=f"Backlink_QA_Report_{get_domain_from_url(page_url)}.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
