@@ -5,6 +5,7 @@ import json
 import datetime
 import time
 from curl_cffi import requests as cffi_requests
+import cloudscraper
 from google import genai
 
 # --- 1. SECURE API CONFIGURATION KEYS ---
@@ -20,7 +21,7 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 def fetch_url_content(url):
     """
     Fetches web content using direct TLS browser impersonation first.
-    If Cloudflare blocks with 403/503, falls back to ScrapingAnt residential proxies.
+    If blocked by Cloudflare (403/503), falls back to ScrapingAnt, then Cloudscraper.
     """
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -28,8 +29,8 @@ def fetch_url_content(url):
         'Accept-Language': 'en-US,en;q=0.9',
     }
 
+    # Attempt 1: Direct Request via Chrome TLS Impersonation
     try:
-        # 1. Direct Request Attempt (Fast)
         response = cffi_requests.get(
             url,
             impersonate="chrome124",
@@ -37,37 +38,44 @@ def fetch_url_content(url):
             timeout=10,
             allow_redirects=True
         )
-        
         if response.status_code == 200:
             return response
+    except Exception:
+        pass
 
-        # 2. ScrapingAnt Fallback for Cloudflare 403 / 503 WAF blocks
-        if response.status_code in [403, 503] and SCRAPERANT_KEY:
+    # Attempt 2: ScrapingAnt Fallback
+    if SCRAPERANT_KEY:
+        try:
             encoded_url = quote(url, safe='')
-            
-            # Formulating API Call using Residential Proxies & Headless Browser
             api_endpoint = (
                 f"https://api.scrapingant.com/v2/general"
                 f"?x-api-key={SCRAPERANT_KEY}"
                 f"&url={encoded_url}"
                 f"&browser=true"
-                f"&proxy_type=residential"
             )
             
-            # Increased timeout to 45 seconds to accommodate JS Turnstile execution
-            ant_response = cffi_requests.get(
-                api_endpoint,
-                timeout=45
-            )
+            ant_response = cffi_requests.get(api_endpoint, timeout=35)
             
             if ant_response.status_code == 200:
                 return ant_response
+            elif ant_response.status_code in [401, 403]:
+                st.error("❌ **ScrapingAnt API Key Error:** Your key is invalid, unverified, or out of credits.")
+        except Exception as e:
+            st.warning(f"ScrapingAnt connection failed: {e}")
 
-        return response
-
+    # Attempt 3: Cloudscraper Fallback Engine
+    try:
+        scraper = cloudscraper.create_scraper(
+            browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
+        )
+        cs_response = scraper.get(url, timeout=15)
+        if cs_response.status_code == 200:
+            return cs_response
+        return cs_response
     except Exception as e:
-        st.error(f"Network Connection Exception: {str(e)}")
-        return None
+        st.error(f"Fallback scraper connection exception: {str(e)}")
+
+    return None
 
 
 def get_domain_from_url(url):
@@ -95,24 +103,24 @@ def check_link_and_tags(page_url, target_url, expected_anchor, brand_name):
         "is_redirecting": False,
         "final_destination_url": page_url,
         "listicle_top_3_pass": "N/A",
-        "html_content": "",  # Save HTML to pass to Gemini
+        "html_content": "",
         "error": None
     }
     
     response = fetch_url_content(page_url)
     
     if not response:
-        results["error"] = "Network Failure: Could not establish connection to target destination."
+        results["error"] = "Network Failure: Unable to connect to target domain across all scrapers."
         return results
 
     if response.status_code != 200:
         results["error"] = f"Scrape Error: Status Code {response.status_code}"
         return results
 
-    # Save HTML to prevent duplicate HTTP requests
+    # Save HTML payload for Gemini reuse
     results["html_content"] = response.text
 
-    if len(response.history) > 0:
+    if hasattr(response, 'history') and len(response.history) > 0:
         results["is_redirecting"] = True
         results["final_destination_url"] = response.url
 
@@ -269,26 +277,12 @@ def fetch_advanced_ahrefs_data(target_url):
     except Exception:
         pass
 
-    time.sleep(1.0)
-
-    # 3. SAMPLE ORGANIC KEYWORDS
-    try:
-        res = cffi_requests.get("https://api.ahrefs.com/v3/site-explorer/organic-keywords", headers=headers, params={"target": domain, "mode": "subdomains", "date": yesterday_str, "limit": 100, "select": "keyword,best_position,volume,sum_traffic,keyword_country", "output": "json"}, timeout=10)
-        if res.status_code == 200:
-            raw_kws = res.json().get("keywords", [])
-            results["keywords"] = [{"Keyword": k.get("keyword", "")} for k in raw_kws if k.get("keyword")][:25]
-        else:
-            results["error"] += f"Keywords Error ({res.status_code}) | "
-    except Exception as e:
-        results["error"] += f"Keywords Exception: {str(e)} | "
-
     return results
 
 
 # --- 5. STREAMLIT FRONT-END DASHBOARD UI ---
 st.set_page_config(page_title="Enterprise Link Building QA", page_icon="🔗", layout="wide")
 st.title("🔗 Enterprise Link Building QA Dashboard")
-st.write("Audit placement verification rules, check sitewide authority risk profiles, and execute AI content mapping validations.")
 
 with st.form("qa_form"):
     st.subheader("📋 Input Specifications")
@@ -310,7 +304,7 @@ if submitted:
     if not page_url or not target_url:
         st.error("❌ Form Incomplete: Please provide both the Live Page URL and Target URL.")
     else:
-        with st.spinner("Step 1/3: Scraping live page code frameworks via TLS/ScrapingAnt..."):
+        with st.spinner("Step 1/3: Scraping live page code frameworks..."):
             qa_results = check_link_and_tags(page_url, target_url, anchor_text, brand_name)
             
         with st.spinner("Step 2/3: Fetching analytics metrics from Ahrefs v3..."):
@@ -341,23 +335,17 @@ if submitted:
                 
             tab1, tab2, tab3 = st.tabs(["🔒 Technical Placement & Compliance", "📈 Ahrefs Sitewide Metrics Profile", "🧠 Semantic AI Relevancy"])
             
-            # --- TAB 1: TECHNICAL RULES ---
             with tab1:
                 st.markdown("### 🔍 Live URL Footprint Guardrails")
                 if qa_results["is_redirecting"]:
-                    st.warning(f"⚠️ **Redirect Alert:** Initial URL redirects! Destination resolved at: `{qa_results['final_destination_url']}`")
+                    st.warning(f"⚠️ **Redirect Alert:** Destination resolved at: `{qa_results['final_destination_url']}`")
                 else:
-                    st.success("✅ **Redirect Check:** Clean direct response destination.")
+                    st.success("✅ **Redirect Check:** Clean direct destination.")
                     
                 if qa_results["is_ugc"]:
                     st.error(f"❌ **UGC Structural Risk:** Comment layout detected! Reason: *{qa_results['ugc_reason']}*")
                 else:
                     st.success("✅ **UGC Profile Check:** Clean editorial article layout verified.")
-                    
-                if qa_results["listicle_top_3_pass"] == "PASS":
-                    st.success(f"✅ **Listicle Framework:** Brand '{brand_name}' ranked within the top 3 structural headings!")
-                elif qa_results["listicle_top_3_pass"] == "FAIL":
-                    st.error(f"❌ **Listicle Framework Deficit:** Brand '{brand_name}' is positioned below top 3 headings.")
 
                 st.markdown("---")
                 st.markdown("### 🔗 Hyperlink Node Verification")
@@ -374,36 +362,13 @@ if submitted:
                 else:
                     st.error("❌ **Link Asset Missing:** Target destination string was not found inside page anchor elements.")
 
-            # --- TAB 2: AHREFS METRICS ---
             with tab2:
                 st.markdown("### 📊 Sitewide Authority Metrics")
                 if ahrefs_results["traffic_history"]:
-                    st.markdown("#### 📉 6-Month Organic Traffic Performance Trend")
                     dates = [i.get('date') for i in ahrefs_results["traffic_history"]]
                     traffic = [i.get('org_traffic', 0) for i in ahrefs_results["traffic_history"]]
                     st.line_chart(data=dict(zip(dates, traffic)))
-                    
-                st.markdown("#### 🔤 Sample Organic Keywords")
-                if ahrefs_results["keywords"]:
-                    st.dataframe(ahrefs_results["keywords"], use_container_width=True)
-                else: 
-                    st.caption("No organic keyword array populated.")
 
-            # --- TAB 3: SEMANTIC AI RELEVANCY ---
             with tab3:
                 st.markdown("### 🧠 Contextual AI Evaluation Log")
-                ai_col1, ai_col2 = st.columns(2)
-                with ai_col1:
-                    if ai_relevancy["niche_pass"] == "PASS":
-                        st.success("🎯 **Niche Requirement:** PASS")
-                    else: 
-                        st.error("❌ **Niche Requirement:** FAIL")
-                    st.caption(f"Requirement Target: *{target_niche}*")
-                with ai_col2:
-                    if ai_relevancy["topic_pass"] == "PASS":
-                        st.success("✍️ **Topic Alignment:** PASS")
-                    else: 
-                        st.error("❌ **Topic Alignment:** FAIL")
-                    st.caption(f"Topic Target: *{business_topic}*")
-                        
                 st.info(f"🤖 **AI Auditor Reasoning:** {ai_relevancy['reason']}")
