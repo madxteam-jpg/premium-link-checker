@@ -19,23 +19,43 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 # --- 2. CORE BACKEND HELPERS & SCRAPERS ---
 def fetch_url_content(url):
     """
-    Fetches web content impersonating a modern browser's TLS signature (Chrome)
-    to bypass Cloudflare and WAF 403 blocks on Streamlit Cloud.
+    Fetches web content using curl_cffi with an automatic proxy fallback
+    to bypass hard IP bans on Streamlit Cloud/AWS networks.
     """
-    proxies = None
-    if SCRAPERAPI_KEY:
-        proxy_url = f"http://scraperapi:{SCRAPERAPI_KEY}@proxy-server.scraperapi.com:8001"
-        proxies = {"http": proxy_url, "https": proxy_url}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+    }
 
     try:
+        # 1. First Attempt: Direct TLS Impersonation
         response = cffi_requests.get(
             url,
             impersonate="chrome",
-            proxies=proxies,
-            timeout=15,
+            headers=headers,
+            timeout=10,
             allow_redirects=True
         )
+        
+        # If successfully retrieved, return directly
+        if response.status_code == 200:
+            return response
+
+        # 2. Fallback Attempt: Route through free proxy renderer if Cloudflare 403 occurs
+        if response.status_code in [403, 503]:
+            jina_url = f"https://r.jina.ai/{url}"
+            fallback_response = cffi_requests.get(
+                jina_url,
+                impersonate="chrome",
+                timeout=15,
+                allow_redirects=True
+            )
+            if fallback_response.status_code == 200:
+                return fallback_response
+
         return response
+
     except Exception as e:
         st.error(f"Network Connection Exception: {str(e)}")
         return None
