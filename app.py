@@ -10,7 +10,6 @@ from google import genai
 # --- 1. SECURE API CONFIGURATION KEYS ---
 AHREFS_API_KEY = st.secrets.get("AHREFS_API_KEY", "")
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
-SCRAPERANT_KEY = st.secrets.get("SCRAPERANT_KEY", "")
 
 # Initialize Gemini Client
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
@@ -19,10 +18,15 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 # --- 2. CORE BACKEND HELPERS & SCRAPERS ---
 import urllib.parse
 
+import urllib.parse
+from curl_cffi import requests as cffi_requests
+
+SCRAPERANT_KEY = st.secrets.get("SCRAPERANT_KEY", "")
+
 def fetch_url_content(url):
     """
-    Fetches raw HTML by falling back to ScraperAnt when Cloudflare 
-    blocks datacenter IPs with a 403 or 503 error.
+    Fetches raw HTML using direct TLS impersonation first, falling back to 
+    ScrapingAnt (https://scrapingant.com/) when Cloudflare blocks with 403/503.
     """
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -31,7 +35,7 @@ def fetch_url_content(url):
     }
 
     try:
-        # 1. Direct request attempt using Chrome TLS impersonation
+        # 1. Direct request via Chrome TLS impersonation
         response = cffi_requests.get(
             url,
             impersonate="chrome124",
@@ -43,10 +47,11 @@ def fetch_url_content(url):
         if response.status_code == 200:
             return response
 
-        # 2. ScraperAnt fallback for Cloudflare 403/503 errors
+        # 2. ScrapingAnt API fallback for Cloudflare 403 / 503 blocks
         if response.status_code in [403, 503] and SCRAPERANT_KEY:
             encoded_url = urllib.parse.quote(url, safe='')
-            api_endpoint = f"https://api.scraperant.com/v2/general?apiKey={SCRAPERANT_KEY}&url={encoded_url}&browser=true"
+            # ScrapingAnt v2 endpoint
+            api_endpoint = f"https://api.scrapingant.com/v2/general?x-api-key={SCRAPERANT_KEY}&url={encoded_url}&browser=true"
             
             ant_response = cffi_requests.get(api_endpoint, timeout=25)
             if ant_response.status_code == 200:
