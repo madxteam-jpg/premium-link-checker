@@ -1,6 +1,6 @@
 import streamlit as st
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 import json
 import datetime
 import time
@@ -10,23 +10,17 @@ from google import genai
 # --- 1. SECURE API CONFIGURATION KEYS ---
 AHREFS_API_KEY = st.secrets.get("AHREFS_API_KEY", "")
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
+SCRAPERANT_KEY = st.secrets.get("SCRAPERANT_KEY", "")
 
 # Initialize Gemini Client
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 
 # --- 2. CORE BACKEND HELPERS & SCRAPERS ---
-import urllib.parse
-
-import urllib.parse
-from curl_cffi import requests as cffi_requests
-
-SCRAPERANT_KEY = st.secrets.get("SCRAPERANT_KEY", "")
-
 def fetch_url_content(url):
     """
-    Fetches raw HTML using direct TLS impersonation first, falling back to 
-    ScrapingAnt (https://scrapingant.com/) when Cloudflare blocks with 403/503.
+    Fetches web content using direct TLS browser impersonation first.
+    If Cloudflare blocks with 403/503, falls back to ScrapingAnt residential proxies.
     """
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -35,7 +29,7 @@ def fetch_url_content(url):
     }
 
     try:
-        # 1. Direct request via Chrome TLS impersonation
+        # 1. Direct Request Attempt (Fast)
         response = cffi_requests.get(
             url,
             impersonate="chrome124",
@@ -47,13 +41,25 @@ def fetch_url_content(url):
         if response.status_code == 200:
             return response
 
-        # 2. ScrapingAnt API fallback for Cloudflare 403 / 503 blocks
+        # 2. ScrapingAnt Fallback for Cloudflare 403 / 503 WAF blocks
         if response.status_code in [403, 503] and SCRAPERANT_KEY:
-            encoded_url = urllib.parse.quote(url, safe='')
-            # ScrapingAnt v2 endpoint
-            api_endpoint = f"https://api.scrapingant.com/v2/general?x-api-key={SCRAPERANT_KEY}&url={encoded_url}&browser=true"
+            encoded_url = quote(url, safe='')
             
-            ant_response = cffi_requests.get(api_endpoint, timeout=25)
+            # Formulating API Call using Residential Proxies & Headless Browser
+            api_endpoint = (
+                f"https://api.scrapingant.com/v2/general"
+                f"?x-api-key={SCRAPERANT_KEY}"
+                f"&url={encoded_url}"
+                f"&browser=true"
+                f"&proxy_type=residential"
+            )
+            
+            # Increased timeout to 45 seconds to accommodate JS Turnstile execution
+            ant_response = cffi_requests.get(
+                api_endpoint,
+                timeout=45
+            )
+            
             if ant_response.status_code == 200:
                 return ant_response
 
@@ -65,7 +71,7 @@ def fetch_url_content(url):
 
 
 def get_domain_from_url(url):
-    """Extracts the root domain (e.g., 'example.com') from any URL string."""
+    """Extracts the root domain from any URL string."""
     try:
         parsed_domain = urlparse(url).netloc
         if parsed_domain.startswith("www."):
@@ -89,21 +95,21 @@ def check_link_and_tags(page_url, target_url, expected_anchor, brand_name):
         "is_redirecting": False,
         "final_destination_url": page_url,
         "listicle_top_3_pass": "N/A",
-        "html_content": "",  # Save HTML to pass directly to Gemini
+        "html_content": "",  # Save HTML to pass to Gemini
         "error": None
     }
     
     response = fetch_url_content(page_url)
     
     if not response:
-        results["error"] = "Network/Cloudflare Failure: Unable to connect to target URL."
+        results["error"] = "Network Failure: Could not establish connection to target destination."
         return results
 
     if response.status_code != 200:
         results["error"] = f"Scrape Error: Status Code {response.status_code}"
         return results
 
-    # Retain HTML payload to avoid a 2nd HTTP request
+    # Save HTML to prevent duplicate HTTP requests
     results["html_content"] = response.text
 
     if len(response.history) > 0:
@@ -122,7 +128,7 @@ def check_link_and_tags(page_url, target_url, expected_anchor, brand_name):
     if robots_meta and 'noindex' in robots_meta.get('content', '').lower():
         results["is_indexable"] = False
 
-    # Optimised UGC Detection (Scans structural container nodes)
+    # Targeted UGC Container Detection
     ugc_containers = soup.find_all(['div', 'section', 'ul', 'ol'], class_=True)
     ugc_classes = {'comment-list', 'comment-body', 'comments-area', 'forum-table', 'vbulletin', 'disqus_thread', 'bbpress-forums'}
     ugc_text_patterns = ['leave a comment', 'post a comment', 'reply to this', 'anonymous user']
@@ -228,12 +234,7 @@ def fetch_advanced_ahrefs_data(target_url):
     results = {
         "dr": "N/A",
         "traffic_history": None,
-        "top_countries": [],
         "keywords": [],
-        "referring_domains": [],
-        "top_pages": [],
-        "volatility_status": "PASS",
-        "volatility_reason": "Profile health looks stable.",
         "error": ""
     }
     
@@ -309,14 +310,13 @@ if submitted:
     if not page_url or not target_url:
         st.error("❌ Form Incomplete: Please provide both the Live Page URL and Target URL.")
     else:
-        with st.spinner("Step 1/3: Scraping live page code frameworks via TLS impersonation..."):
+        with st.spinner("Step 1/3: Scraping live page code frameworks via TLS/ScrapingAnt..."):
             qa_results = check_link_and_tags(page_url, target_url, anchor_text, brand_name)
             
         with st.spinner("Step 2/3: Fetching analytics metrics from Ahrefs v3..."):
             ahrefs_results = fetch_advanced_ahrefs_data(page_url)
 
         with st.spinner("Step 3/3: Running contextual semantic relevancy audits via Gemini Flash..."):
-            # Reuses HTML fetched in Step 1 to prevent a 2nd HTTP network call
             ai_relevancy = analyze_relevancy_with_gemini(
                 qa_results.get("html_content", ""), 
                 target_niche, 
@@ -329,7 +329,6 @@ if submitted:
         if qa_results["error"]:
             st.error(f"System Blocked: {qa_results['error']}")
         else:
-            # Metric Summary Cards
             m_col1, m_col2, m_col3 = st.columns(3)
             with m_col1:
                 st.metric(label="Domain Rating", value=f"DR {ahrefs_results['dr']}")
