@@ -4,6 +4,7 @@ from urllib.parse import urlparse, quote
 import json
 import datetime
 import time
+import requests
 from curl_cffi import requests as cffi_requests
 import cloudscraper
 from google import genai
@@ -20,16 +21,46 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 # --- 2. CORE BACKEND HELPERS & SCRAPERS ---
 def fetch_url_content(url):
     """
-    Fetches web content using direct TLS browser impersonation first.
-    If blocked by Cloudflare (403/503), falls back to ScrapingAnt, then Cloudscraper.
+    Multi-stage scraper pipeline:
+    1. ScrapingAnt via standard 'requests' (Handles Cloudflare JS rendering natively)
+    2. Direct Chrome TLS impersonation via curl_cffi
+    3. Cloudscraper engine
+    4. Jina Reader mirror fallback
     """
+    
+    # -------------------------------------------------------------
+    # ATTEMPT 1: ScrapingAnt via Standard Requests (Primary Cloudflare Bypass)
+    # -------------------------------------------------------------
+    if SCRAPERANT_KEY:
+        try:
+            encoded_url = quote(url, safe='')
+            # Note: We use standard requests, not curl_cffi, to prevent libcurl socket hangs
+            api_endpoint = (
+                f"https://api.scrapingant.com/v2/general"
+                f"?x-api-key={SCRAPERANT_KEY}"
+                f"&url={encoded_url}"
+                f"&browser=true"
+            )
+            # 60s timeout gives ScrapingAnt enough room to clear Turnstile challenges
+            ant_response = requests.get(api_endpoint, timeout=60)
+            
+            if ant_response.status_code == 200:
+                return ant_response
+            elif ant_response.status_code in [401, 403]:
+                st.error("❌ **ScrapingAnt API Error:** Invalid API Key or out of credits.")
+        except requests.exceptions.Timeout:
+            st.warning("⚠️ **ScrapingAnt Timed Out:** Falling back to secondary scrapers...")
+        except Exception as e:
+            st.warning(f"⚠️ ScrapingAnt Connection Error: {e}")
+
+    # -------------------------------------------------------------
+    # ATTEMPT 2: Direct Chrome TLS Impersonation via curl_cffi
+    # -------------------------------------------------------------
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
     }
-
-    # Attempt 1: Direct Request via Chrome TLS Impersonation
     try:
         response = cffi_requests.get(
             url,
@@ -43,37 +74,29 @@ def fetch_url_content(url):
     except Exception:
         pass
 
-    # Attempt 2: ScrapingAnt Fallback
-    if SCRAPERANT_KEY:
-        try:
-            encoded_url = quote(url, safe='')
-            api_endpoint = (
-                f"https://api.scrapingant.com/v2/general"
-                f"?x-api-key={SCRAPERANT_KEY}"
-                f"&url={encoded_url}"
-                f"&browser=true"
-            )
-            
-            ant_response = cffi_requests.get(api_endpoint, timeout=35)
-            
-            if ant_response.status_code == 200:
-                return ant_response
-            elif ant_response.status_code in [401, 403]:
-                st.error("❌ **ScrapingAnt API Key Error:** Your key is invalid, unverified, or out of credits.")
-        except Exception as e:
-            st.warning(f"ScrapingAnt connection failed: {e}")
-
-    # Attempt 3: Cloudscraper Fallback Engine
+    # -------------------------------------------------------------
+    # ATTEMPT 3: Cloudscraper Engine
+    # -------------------------------------------------------------
     try:
         scraper = cloudscraper.create_scraper(
             browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
         )
-        cs_response = scraper.get(url, timeout=15)
+        cs_response = scraper.get(url, timeout=12)
         if cs_response.status_code == 200:
             return cs_response
-        return cs_response
-    except Exception as e:
-        st.error(f"Fallback scraper connection exception: {str(e)}")
+    except Exception:
+        pass
+
+    # -------------------------------------------------------------
+    # ATTEMPT 4: Jina Mirror Engine (Emergency Proxy Fallback)
+    # -------------------------------------------------------------
+    try:
+        jina_url = f"https://r.jina.ai/{url}"
+        jina_res = requests.get(jina_url, timeout=15)
+        if jina_res.status_code == 200:
+            return jina_res
+    except Exception:
+        pass
 
     return None
 
@@ -260,7 +283,7 @@ def fetch_advanced_ahrefs_data(target_url):
     
     # 1. DOMAIN RATING (DR)
     try:
-        res = cffi_requests.get("https://api.ahrefs.com/v3/site-explorer/domain-rating", headers=headers, params={"target": domain, "date": yesterday_str, "output": "json"}, timeout=10)
+        res = requests.get("https://api.ahrefs.com/v3/site-explorer/domain-rating", headers=headers, params={"target": domain, "date": yesterday_str, "output": "json"}, timeout=10)
         if res.status_code == 200:
             results["dr"] = res.json().get("domain_rating", {}).get("domain_rating", "N/A")
     except Exception:
@@ -270,7 +293,7 @@ def fetch_advanced_ahrefs_data(target_url):
 
     # 2. 6-MONTH ORGANIC TRAFFIC HISTORY
     try:
-        res = cffi_requests.get("https://api.ahrefs.com/v3/site-explorer/metrics-history", headers=headers, params={"target": domain, "mode": "subdomains", "date_from": six_months_ago, "date_to": yesterday_str, "history_grouping": "monthly", "output": "json"}, timeout=10)
+        res = requests.get("https://api.ahrefs.com/v3/site-explorer/metrics-history", headers=headers, params={"target": domain, "mode": "subdomains", "date_from": six_months_ago, "date_to": yesterday_str, "history_grouping": "monthly", "output": "json"}, timeout=10)
         if res.status_code == 200:
             raw = res.json().get("metrics", [])
             results["traffic_history"] = sorted(raw, key=lambda x: x.get('date', ''))
