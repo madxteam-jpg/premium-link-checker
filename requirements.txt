@@ -4,3 +4,4 @@ beautifulsoup4
 google-genai
 curl_cffi
 cloudscraper
+reportlab
