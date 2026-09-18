@@ -33,7 +33,7 @@ def fetch_url_content(url):
             impersonate="chrome",
             proxies=proxies,
             timeout=15,
-            follow_redirects=True
+            allow_redirects=True
         )
         return response
     except Exception as e:
